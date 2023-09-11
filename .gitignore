@@ -1,3 +1,10 @@
+# Repo related
+dataset/
+datasplit/
+lightning_logs/
+logs/
+*.db
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
