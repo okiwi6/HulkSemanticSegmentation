@@ -1,4 +1,4 @@
-. .venv3.10/bin/activate
+. .venv/bin/activate
 
 STUDY_NAME="semseg_4c_1"
 
