@@ -5,6 +5,7 @@ from .configuration.constants import CLASS_WEIGHTS, NUM_INPUT_CHANNELS, NUM_CLAS
 
 import torch
 from lightning import Trainer
+from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.callbacks import LearningRateMonitor, StochasticWeightAveraging, ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger
@@ -15,56 +16,39 @@ def main():
     # print(model)
     # model(torch.zeros((1,3,480,640)))
     # return
-    dataset = DataModule(batch_size=20)
+    batch_size = 6
+    dataset = DataModule(batch_size=batch_size, use_ycbcr=False)
     
-    # model = LightningModel(
-    #     NUM_INPUT_CHANNELS, 
-    #     NUM_CLASSES, 
-    #     class_weights=CLASS_WEIGHTS, 
-    #     learning_rate=1e-2,
-    #     learning_rate_reduction_factor=0.8,
-    #     iou_weighting=2.5,
-    #     tv_regularization_weighting=0,
-    #     label_smoothing=0.1,
-    # )
-    # model = LightningModel.load_from_checkpoint("lightning_logs/version_73/checkpoints/epoch=59-step=83859.ckpt")
+    # model = LightningModel.load_from_checkpoint("lightning_logs/version_110/checkpoints/epoch=0-step=4666.ckpt")
     model = LightningModel(
         NUM_INPUT_CHANNELS, 
         NUM_CLASSES, 
         class_weights=CLASS_WEIGHTS, 
-        enable_validation_plots=False,
-        learning_rate=1e-2,
+        loss_type="focal",
+        optimizer="lion",
+        enable_validation_plots=True,
+        learning_rate=2e-4,
         learning_rate_reduction_factor=0.8,
-        iou_weighting=2.5,
-        tv_regularization_weighting=0,
-        label_smoothing=0.1,
+        tv_regularization_weighting=0.0,
+        label_smoothing=0.28,
+        batch_size=batch_size,
     )
-    logger = TensorBoardLogger(
-        save_dir="logs_tmp",
-        name="test",
-        version=f"trial_1",
-        default_hp_metric=False
-    )
-
     trainer = Trainer(
         max_epochs=80,
-        val_check_interval=0.25,
+        min_epochs=5,
+        val_check_interval=0.5,
+        strategy=DDPStrategy(find_unused_parameters=True),
         callbacks = [
+            ModelCheckpoint(save_top_k=5, monitor="Validation/IoU", mode="max"),
             LearningRateMonitor(logging_interval='step'), 
-            StochasticWeightAveraging(swa_lrs=1e-2),
-            ModelCheckpoint(
-                f"checkpoints/",
-                monitor="Validation/IoU",
-                mode="max"
-            ),
+            StochasticWeightAveraging(swa_lrs=0.00054),
             EarlyStopping(
                 monitor="Validation/IoU",
-                min_delta=0.01,
-                patience=3,
+                min_delta=0.001,
+                patience=10,
                 mode="max"
             )
         ],
-        logger=logger,
         fast_dev_run=False,
     )
     trainer.fit(model, dataset)

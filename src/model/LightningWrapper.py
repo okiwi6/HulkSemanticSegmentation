@@ -3,21 +3,53 @@ from torchmetrics import JaccardIndex
 from torchmetrics.functional.image import total_variation
 import torch.nn as nn
 import torch
+import torchgeometry as tgm
 import matplotlib.pyplot as plt
+import numpy as np
+import gc
+from typing import Literal
+from lion_pytorch import Lion
 
-from ..configuration.constants import CLASS_TO_LABEL
+from ..configuration.constants import CLASS_TO_LABEL, CLASS_MAPPING, DOWNSCALE_FACTOR
 from ..visualization.images import display, create_mask
 from ..visualization.confusion_matrix import fig_confusion_matrix
 from .UNet import UNet2, UNet1
+from .DeepLabv3 import DeepLabv3
 
 class LightningModel(LightningModule):
-    def __init__(self, number_of_channels, number_of_classes, class_weights, learning_rate, learning_rate_reduction_factor, tv_regularization_weighting, label_smoothing, batch_size, enable_validation_plots=True, **kwargs):
+    def __init__(
+        self, 
+        number_of_channels, 
+        number_of_classes,
+        loss_type: Literal["cross_entropy", "focal"],
+        class_weights, 
+        learning_rate, 
+        learning_rate_reduction_factor, 
+        tv_regularization_weighting, 
+        label_smoothing, 
+        batch_size,
+        optimizer,
+        enable_validation_plots=True, 
+        **kwargs
+    ):
         super().__init__()
         print(f"Unused keyword arguments: {kwargs}")
-        self.unet = UNet2(number_of_channels, number_of_classes)
+        # self.unet = UNet2(number_of_channels, number_of_classes)
+        self.unet = DeepLabv3(number_of_channels, number_of_classes)
         self.num_classes = number_of_classes
-        # self.unet = DeepLabV3MobileNetV3(number_of_classes)
-        self.loss = nn.CrossEntropyLoss(weight=torch.from_numpy(class_weights), label_smoothing=label_smoothing)
+        
+        self.class_to_label = CLASS_TO_LABEL
+        self.class_mapping = CLASS_MAPPING
+        self.downscale_factor = DOWNSCALE_FACTOR
+        self.optimizer = optimizer
+
+        if loss_type == "cross_entropy":
+            self.loss = nn.CrossEntropyLoss(weight=torch.from_numpy(class_weights.astype(np.float32)), label_smoothing=label_smoothing)
+        elif loss_type == "focal":
+            self.loss = tgm.losses.FocalLoss(alpha=0.5, reduction="mean")
+        else:
+            raise Exception(f"{loss_type} is not a valid loss")
+        
         self.jaccard = JaccardIndex('multiclass', num_classes=number_of_classes)
         self.class_accuracy = JaccardIndex('multiclass', num_classes=number_of_classes, average=None)
         self.learning_rate = learning_rate
@@ -29,8 +61,9 @@ class LightningModel(LightningModule):
         self.should_plot_this_step = False
         self.save_hyperparameters()
 
-    def log_graph(self):
-        self.logger.experiment.add_graph(self.unet, torch.zeros((1, 3, 640, 480)).to("cuda"))
+    # def log_graph(self):
+    #     TODO: Add image downscaling
+    #     self.logger.experiment.add_graph(self.unet, torch.zeros((1, 3, 640, 480)).to("cuda"))
 
     def _step(self, images, masks):
         # x = images.permute(0, 3, 1, 2)
@@ -104,8 +137,39 @@ class LightningModel(LightningModule):
 
     def on_validation_epoch_start(self):
         self.should_plot_this_step = self.enable_validation_plots
+        gc.collect()
+
+    def test_step(self, batch, batch_idx):
+        images, masks = batch
+        step_result = self._step(images, masks)
+
+        loss = step_result["loss"]
+        iou = step_result["iou"]
+        tv = step_result["tv"]
+        tv_target = step_result["tv_target"]
+        predicted_masks = step_result["predicted"]
+
+        self.log("Validation/Loss", loss, sync_dist=True, batch_size=self.batch_size)
+        self.log("Validation/IoU", iou, sync_dist=True, batch_size=self.batch_size)
+        self.log("Validation/TotalVariation", torch.abs(tv - tv_target), sync_dist=True, batch_size=self.batch_size)
+
+        class_ious = self.class_accuracy(predicted_masks, masks)
+        self.log_dict(
+            {
+                f"Validation/{title}": value
+                for title, value in zip(CLASS_TO_LABEL, class_ious)
+            },
+            sync_dist=True, 
+            batch_size=self.batch_size
+        )
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        if self.optimizer == "adam":
+            optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        elif self.optimizer == "lion":
+            optimizer = Lion(self.parameters(), lr=self.learning_rate, weight_decay=1e-2)
+        else:
+            raise ValueError(f"{self.optimizer} is not a valid optimizer")
+        
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=self.learning_rate_reduction_factor, patience=10, min_lr=1e-5)
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "Validation/Loss"}

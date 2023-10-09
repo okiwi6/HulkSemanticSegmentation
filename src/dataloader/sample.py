@@ -2,21 +2,31 @@ from ..configuration.constants import CLASS_MAPPING, NUM_CLASSES
 
 import os
 from os import path
-from PIL import Image
+from PIL import Image, ImageFile
 import numpy as np
 import json
 import shutil
+import cv2
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class Sample:
-    def __init__(self, input_path, output_path, positive=True):
+    def __init__(self, input_path, output_path, positive=True, use_ycbcr=False):
         self.input_path = input_path
         file_number = int(path.splitext(path.basename(input_path))[0].rsplit("_", 2)[-1])
         assert str(file_number) in output_path
         self.output_path = output_path
         self.is_positive_sample = positive
+        self.use_ycbcr = use_ycbcr
 
     def load(self):
-        input = np.array(Image.open(self.input_path), dtype=np.float32) / 255.0
+        image = np.array(Image.open(self.input_path), np.uint8)
+        if self.use_ycbcr:
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2YCrCb)
+            # Convert YCrCb to YCbCr
+            image[:,:,[1,2]] = image[:,:,[2,1 ]]
+        # input = 2.0 * image.astype(np.float32) / 255.0 - 1
+        input = image.astype(np.float32) / 255.0
         output = self.load_output()
         
         return input, output

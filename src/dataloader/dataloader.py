@@ -1,6 +1,7 @@
 from .sample import Sample
 from ..configuration.constants import NUM_CLASSES, NUM_AUGMENTATION_VARIANTS, NUM_INPUT_CHANNELS
 from ..augmentation.augmenter2 import Augmenter
+from .realdataloader import RealImageDataset
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -11,12 +12,13 @@ import numpy as np
 from lightning import LightningDataModule
 
 class ImageDataset(Dataset):
-    def __init__(self, dataset_path, augmentation_variants, transform=None, target_transform=None):
+    def __init__(self, dataset_path, augmentation_variants, transform=None, use_ycbcr=False):
         self.raw_paths = sorted(glob.glob(path.join(dataset_path, "raw", "*.png")), key=lambda data: int(self.filename(data)))
         self.augmented_positive_paths = [
             sorted(glob.glob(path.join(dataset_path, "augmented", f"{variant}_*.png")))
             for variant in range(augmentation_variants)
         ]
+        self.use_ycbcr = use_ycbcr
         self.augmented_negative_paths = sorted(glob.glob(path.join(dataset_path, "augmented", "1000000*.png")))
         self.segmentation_paths = sorted(glob.glob(path.join(dataset_path, "segmentation", "*.png")), key=lambda data: int(self.filename(data)))
         self.augmentation_variants = augmentation_variants
@@ -27,7 +29,6 @@ class ImageDataset(Dataset):
         self.number_of_data_pairs = len(self.dataset)
 
         self.transform = transform
-        self.target_transform = target_transform
 
     def __len__(self):
         return self.number_of_data_pairs
@@ -66,8 +67,8 @@ class ImageDataset(Dataset):
         assert pattern in segmented_path
         assert all(map(lambda data: pattern in data, augmented_positive_paths))
 
-        raw_sample = [Sample(raw_path, segmented_path)]
-        positive_augmented_samples = [Sample(augmented_path, segmented_path) for augmented_path in augmented_positive_paths]
+        raw_sample = [Sample(raw_path, segmented_path, use_ycbcr=self.use_ycbcr)]
+        positive_augmented_samples = [Sample(augmented_path, segmented_path, use_ycbcr=self.use_ycbcr) for augmented_path in augmented_positive_paths]
         
         return raw_sample + positive_augmented_samples
 
@@ -75,7 +76,7 @@ class ImageDataset(Dataset):
         f = lambda p: "1000000" in p
         segmented_negative_paths = sorted(list(filter(f, self.segmentation_paths)), key=lambda data: int(self.filename(data)))
         assert len(segmented_negative_paths) + len(self.raw_paths) == len(self.segmentation_paths)
-        return [Sample(false_example, false_mask, positive=False) for false_example, false_mask in zip(self.augmented_negative_paths, segmented_negative_paths)]    
+        return [Sample(false_example, false_mask, positive=False, use_ycbcr=self.use_ycbcr) for false_example, false_mask in zip(self.augmented_negative_paths, segmented_negative_paths)]    
 
     def sample_class_histogram(self, n_samples):
         print("[Warn] Sampling histogram takes alot of time")
@@ -89,29 +90,35 @@ class ImageDataset(Dataset):
         return histogram / np.sum(histogram)
 
 class DataModule(LightningDataModule):
-    def __init__(self, data_dir: str = "./datasplit", batch_size: int = 8, random_seed = 42, num_workers = 15):
+    def __init__(self, use_ycbcr: bool = False, data_dir: str = "./datasplit", real_image_dir: str = "./realimages/realimagesBadConditions", batch_size: int = 8, random_seed = 42, num_workers = 30):
         super().__init__()
         self.train_data_dir = path.join(data_dir, "train")
         self.test_data_dir = path.join(data_dir, "test")
+        self.real_image_dir = real_image_dir
         self.batch_size = batch_size
         self.random_seed = random_seed
         self.num_workers = num_workers
+        self.use_ycbcr = use_ycbcr
+        self.train = None
 
 
     def setup(self, stage: str):
         if stage in ["fit", "validate"]:
             augmenter = Augmenter(height=480, width=640)
-            train = ImageDataset(self.train_data_dir, NUM_AUGMENTATION_VARIANTS, transform=augmenter.transform)
+            self.train = ImageDataset(self.train_data_dir, NUM_AUGMENTATION_VARIANTS, transform=augmenter.transform, use_ycbcr=self.use_ycbcr)
 
             # Split the train dataset into 80% train, 20% validation
-            train_size = int(0.8 * len(train))
-            validation_size = len(train) - train_size
-            self.train_dataset, self.validation_dataset = torch.utils.data.random_split(train, [train_size, validation_size], generator=torch.Generator().manual_seed(self.random_seed))
+            train_size = int(0.8 * len(self.train))
+            validation_size = len(self.train) - train_size
+            self.train_dataset, self.validation_dataset = torch.utils.data.random_split(self.train, [train_size, validation_size], generator=torch.Generator().manual_seed(self.random_seed))
 
-        if stage == "pred":
+        if stage == "test":
             augmenter = Augmenter(height=480, width=640)
-            self.test_dataset = ImageDataset(self.test_data_dir, NUM_AUGMENTATION_VARIANTS, transform=augmenter.test_transform)
+            self.test_dataset = ImageDataset(self.test_data_dir, NUM_AUGMENTATION_VARIANTS, transform=augmenter.test_transform, use_ycbcr=self.use_ycbcr)
 
+        if stage == "real":
+            augmenter = Augmenter(height=480, width=640)
+            self.real_dataset = RealImageDataset(self.real_image_dir, transform=augmenter.real_transform, use_ycbcr=self.use_ycbcr)
            
     def train_dataloader(self):
         # pin_memory = True, persistens_workers = True
@@ -122,4 +129,13 @@ class DataModule(LightningDataModule):
         return DataLoader(self.validation_dataset, batch_size=self.batch_size, num_workers=self.num_workers, drop_last=True)
 
     def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=self.batch_size,)
+        return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers, drop_last=True)
+
+    def real_dataloader(self):
+        return DataLoader(self.real_dataset, batch_size=self.batch_size, num_workers=self.num_workers, drop_last=True)
+
+    def sample_class_weights(self):
+        if not self.train:
+            self.setup("fit")
+
+        return 1. / self.train.sample_class_histogram(800)

@@ -46,28 +46,51 @@ import numpy as np
 
 # CLASS_TO_LABEL = ["Nothing", "Field", "Line"]
 
+# CLASS_MAPPING = {
+#   "field": {
+#     "ball": 0,
+#     "field": 1,
+#     "cross_l": 2,
+#     "cross_t": 2,
+#     "cross_x": 2,
+#     "line": 2,
+#     "circle": 2,
+#     "goal": 0,
+#   },
+#   "robots": {
+#     "rightleg": 3,
+#     "leftleg": 3,
+#     "rightarm": 3,
+#     "leftarm": 3,
+#     "body": 3,
+#     "head": 3,
+#   }
+# }
+
+# CLASS_TO_LABEL = ["Nothing", "Field", "Line", "Robot"]
+
 CLASS_MAPPING = {
   "field": {
     "ball": 0,
-    "field": 1,
-    "cross_l": 2,
-    "cross_t": 2,
-    "cross_x": 2,
-    "line": 2,
-    "circle": 2,
+    "field": 0,
+    "cross_l": 1,
+    "cross_t": 1,
+    "cross_x": 1,
+    "line": 1,
+    "circle": 1,
     "goal": 0,
   },
   "robots": {
-    "rightleg": 3,
-    "leftleg": 3,
-    "rightarm": 3,
-    "leftarm": 3,
-    "body": 3,
-    "head": 3,
+    "rightleg": 2,
+    "leftleg": 2,
+    "rightarm": 2,
+    "leftarm": 2,
+    "body": 2,
+    "head": 2,
   }
 }
 
-CLASS_TO_LABEL = ["Nothing", "Field", "Line", "Robot"]
+CLASS_TO_LABEL = ["Other", "Line", "Robot"]
 
 # 0 is also an class
 NUM_CLASSES = len(CLASS_TO_LABEL)

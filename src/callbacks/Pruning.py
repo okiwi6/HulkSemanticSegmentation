@@ -49,7 +49,6 @@ class PyTorchLightningPruningCallback(Callback):
             return
 
         current_score = trainer.callback_metrics.get(self.monitor)
-        print(current_score)
         if current_score is None:
             message = (
                 f"The metric '{self.monitor}' is not in the evaluation logs for pruning. "
